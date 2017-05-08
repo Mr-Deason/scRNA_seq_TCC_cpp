@@ -1,0 +1,17 @@
+{
+    "NUM_THREADS": 8,
+    "WINDOW": [500, 5000],
+    "SOURCE_DIR": "../source/",
+    "BASE_DIR": "../example_dataset/fastq_files/",
+    "sample_idx": ["ATCGCTCC","CCGTACAG","GATAGGTA","TGACTAGT"],
+    "SAVE_DIR": "../example_dataset/save_dir/",
+    "dmin": 5,
+    "BARCODE_LENGTH": 14,
+    "OUTPUT_DIR": "../example_dataset/output/",
+    "kallisto":{
+        "binary": "c:/Users/MrD_s/OneDrive/UW/Courses/Bioinformation_Research/kallisto_linux-v0.43.1/kallisto",
+        "index": "c:/Users/MrD_s/OneDrive/UW/Courses/Bioinformation_Research/kallisto/Homo_sapiens.GRCh37.75.cdna.ncrna.kalisto.idx",
+        "TCC_output" : "../example_dataset/TCC_output/"
+    }
+}
+
