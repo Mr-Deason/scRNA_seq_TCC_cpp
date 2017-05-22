@@ -8,11 +8,15 @@
 #include <time.h>
 #include <omp.h>
 #include <boost\filesystem.hpp>
+#include <boost\property_tree\ptree.hpp>
+#include <boost\property_tree\json_parser.hpp>
+#include <boost\foreach.hpp>  
 #include <zlib.h>
 #include "kseq.h"
 
 using namespace std;
 namespace fs = boost::filesystem;
+namespace pt = boost::property_tree;
 
 KSEQ_INIT(gzFile, gzread);
 
@@ -408,13 +412,18 @@ double* savgol_filter(double *data, int n, int win_len, int polyorder)
 
 void get_barcode()
 {
+	pt::ptree root;
+	pt::read_json("config.json", root);
+	
+
+	static int BARCODE_LENGTH = root.get<int>("BARCODE_LENGTH");
+	static int D_MIN = root.get<int>("dmin");
+	static string BASE_DIR = root.get<string>("BASE_DIR");
+
 	vector<string> files;
 	srand(clock());
-
-	static int BARCODE_LENGTH = 14;
-	static int D_MIN = 5;
-
-	fs::path fastq_dir("../example_dataset/fastq_files/");
+	
+	fs::path fastq_dir(BASE_DIR.c_str());
 	if (exists(fastq_dir) && fs::is_directory(fastq_dir))
 	{
 		for (fs::directory_entry ite : fs::directory_iterator(fastq_dir))
@@ -441,7 +450,6 @@ void get_barcode()
 		gzclose(gfp);
 		kseq_destroy(seq1);
 	}
-	cout << barcodes.size() << endl;
 
 	FILE* fp;
 
@@ -450,7 +458,6 @@ void get_barcode()
 	{
 		barcodes_cnt[barcodes[i]]--;
 	}
-	cout << barcodes_cnt.size() << endl;
 
 	vector<pair<int, unsigned int> > cnt_bar;
 	for (map<unsigned int, int>::iterator ite = barcodes_cnt.begin(); ite != barcodes_cnt.end(); ++ite)
@@ -484,8 +491,6 @@ void get_barcode()
 		codewords[i] = cnt_bar[i].second;
 	}
 
-	///to delete
-	sort(codewords, codewords + num_barcodes);
 
 	int **dist = new int*[num_barcodes];
 	for (int i = 0; i < num_barcodes; ++i)
@@ -516,8 +521,6 @@ void get_barcode()
 			dmin = min(dmin, dist[i][j]);
 		if (dmin >= D_MIN)
 			brc_to_correct.push_back(i);
-		if (i < 10)
-			cout << i << ' ' << dmin << endl;
 	}
 
 	fp = fopen("barcodes.dat", "wb");
@@ -533,12 +536,6 @@ void get_barcode()
 		fprintf(fp, "%d\n", brc_to_correct[i]);
 	fclose(fp);
 
-	///to delete
-	for (int i = 0; i < brc_to_correct.size(); ++i)
-	{
-		cout << brc_to_correct[i] << ' ';
-	}
-
 
 	cout << "Cell_barcodes_detected: " << num_barcodes << endl;
 	cout << "NUM_OF_READS_in_CELL_BARCODES = " << num_reads << endl;
@@ -546,6 +543,37 @@ void get_barcode()
 	for (int i = 0; i < num_barcodes; i++)
 		delete[] dist[i];
 	delete[] dist;
+};
+
+vector<unsigned int> hamming_circle(unsigned int barcode, int len, int d)
+{
+	vector<unsigned int> cousins;
+	if (d == 1)
+	{
+		for (int i = 0; i < len; ++i)
+		{
+			for (int k = 1; k < 4; ++k)
+			{
+				//unsigned int cousin = barcode ^ (k << (i * 2))
+				unsigned int cousin = barcode ^ (k << (i << 1));
+				cousins.push_back(cousin);
+			}
+		}
+	}
+	else if (d == 2)
+	{
+		for (int i = 0; i < len; ++i)
+			for (int j = i+1; j < len; ++j)
+				for (int k = 1; k < 4; ++k)
+					for (int l = 1; l < 4; ++l)
+					{
+						unsigned int cousin = (barcode ^ (k << (i << 1))) ^ (l << (j << 1));
+						cousins.push_back(cousin);
+					}
+	}
+	else
+		cout << "invalid parameter!" << endl;
+	return cousins;
 }
 
 void error_correct_and_split()
@@ -583,7 +611,6 @@ void error_correct_and_split()
 		brc_to_correct.insert(codewords[brc_idx_to_correct[i]]);
 	}
 
-	///to do
 	vector<vector<int> > ret;
 	ret.resize(codewords.size());
 	for (int i = 0; i < barcodes.size(); ++i)
@@ -596,35 +623,16 @@ void error_correct_and_split()
 		else
 		{
 			bool flag = true;
-			for (int j = 0; j < BARCODE_LENGTH && flag; ++j)
-			{
-				for (int k = 1; k < 4 && flag; ++k)
+			vector<unsigned int> cousins = hamming_circle(barcode, BARCODE_LENGTH, 1);
+			for (int j=0;j<cousins.size();++j)
+				if (brc_to_correct.find(cousins[j]) != brc_to_correct.end())
 				{
-					//unsigned int cousin = barcode ^ (k << (j * 2))
-					unsigned int cousin = barcode ^ (k << (j << 1));
-					if (brc_to_correct.find(cousin) != brc_to_correct.end())
-					{
-						ret[barcode_to_idx[cousin]].push_back(i);
-						flag = false;
-						break;
-					}
+					ret[barcode_to_idx[cousins[j]]].push_back(i);
+					break;
 				}
-			}
 		}
 	}
 
-	/*
-	fp = fopen("ret.lst", "w");
-	for (int i = 0; i < ret.size(); ++i)
-	{
-		for (int j = 0; j < ret[i].size(); ++j)
-		{
-			fprintf(fp, "%d ", ret[i][j]);
-		}
-		fprintf(fp, "\n");
-	}
-	fclose(fp);
-	*/
 
 	int NUM_OF_READS_in_CELL_BARCODES = 0;
 	for (int i = 0; i < codewords.size(); ++i)
@@ -639,7 +647,7 @@ void error_correct_and_split()
 		for (fs::directory_entry ite : fs::directory_iterator(fastq_dir))
 			if (fs::is_regular_file(ite))
 				files.push_back(ite.path().string());
-		sort(files.begin(), files.end());
+		//sort(files.begin(), files.end());
 	}
 
 	vector<int> line_byte_idx;
@@ -673,16 +681,22 @@ void error_correct_and_split()
 	fclose(fp);
 
 	fp = fopen(all_reads_file, "r");
+	char out[20] = "./out/";
+	FILE *fp_umi_list = fopen("./out/umi_read_list.txt", "wb");
 	int flag = 0;
 	for (int i = 0; i < codewords.size(); ++i)
 	{
-		char filename[30], fastq_file[30], umi_file[30];
-		sprintf(filename, "./out/cell_%04d_%s", i, decode(codewords[i], BARCODE_LENGTH).c_str());
-		sprintf(fastq_file, "%s.fastq", filename);
-		sprintf(umi_file, "%s.umi", filename);
-		FILE *ffq = fopen(fastq_file, "wb");
+		char filename[40], fastq_file[40], fastq_gz_file[43], umi_file[40];
+		sprintf(filename, "cell_%04d_%s", i, decode(codewords[i], BARCODE_LENGTH).c_str());
+		//sprintf(fastq_file, "%s%s.fastq", out, filename);
+		sprintf(fastq_gz_file, "%s%s.fastq.gz", out, filename);
+		sprintf(umi_file, "%s%s.umi", out, filename);
+		//FILE *ffq = fopen(fastq_file, "wb");
 		FILE *fum = fopen(umi_file, "wb");
-		cout << "writing " << filename << endl;
+		gzFile gffq = gzopen(fastq_gz_file, "w");
+		//cout << "writing " << filename << endl;
+
+		fprintf(fp_umi_list, "%s\t%s\t%s\n", filename, umi_file, fastq_gz_file);
 		for (int j = 0; j < ret[i].size(); ++j)
 		{
 			unsigned int r = ret[i][j];
@@ -694,24 +708,167 @@ void error_correct_and_split()
 				//fread(buff, sizeof(char), len, fp);
 				fgets(buff, buff_len, fp);
 				if (line < r * 8 + 4)
+				{
 					//fwrite(buff, sizeof(char), len, ffq);
-					fputs(buff, ffq);
+					//fputs(buff, ffq);
+					gzwrite(gffq, buff, len);
+				}
 				if (line > r * 8 + 4)
 					//fwrite(buff, sizeof(char), len, fum);
 					fputs(buff, fum);
 			}
 		}
-		fclose(ffq);
+		//fclose(ffq);
+		gzclose(gffq);
 		fclose(fum);
 	}
 	fclose(fp);
+	fclose(fp_umi_list);
+}
+void compute_TCCs()
+{
+	string kallisto = "kallisto";
+	string index = "C:/Users/MrD_s/OneDrive/UW/Courses/Bioinformation_Research/kallisto/Homo_sapiens.GRCh37.75.cdna.ncrna.kalisto.idx";
+	string tcc_out = "./output/";
+	string out = "./out/";
+	string num_threads = "8";
+	string cmd = kallisto + " pseudo -i " +
+		index + " -o " + tcc_out + " --umi -b " +
+		out + "umi_read_list.txt" + " -t " + num_threads;
 
-	getchar();
+	cout << "Running kallisto pseudo:" << endl;
+	cout << cmd << endl;
+
+	system(cmd.c_str());
+
+	cout << "DONE" << endl;
+}
+void prep_TCC_matrix()
+{
+	string tcc_out = "./output/";
+	string ecfile_dir = tcc_out + "matrix.ec";
+	string tsvfile_dir = tcc_out + "matrix.tsv";
+
+	cout << "Loading TCCs..." << endl;
+
+	FILE *fp;
+	fp = fopen(tsvfile_dir.c_str(), "rb");
+	int a, b, x;
+	vector<int> rows, cols, data;
+	while (fscanf(fp, "%d%d%d", &a, &b, &x) != EOF)
+	{
+		cols.push_back(a);
+		rows.push_back(b);
+		data.push_back(x);
+	}
+	map<int, int> map_rows, map_cols;
+	vector<int> uni_rows(rows), uni_cols(cols);
+	sort(uni_rows.begin(), uni_rows.end());
+	sort(uni_cols.begin(), uni_cols.end());
+	uni_rows.erase(unique(uni_rows.begin(), uni_rows.end()), uni_rows.end());
+	uni_cols.erase(unique(uni_cols.begin(), uni_cols.end()), uni_cols.end());
+	for (int i = 0; i < uni_rows.size(); ++i)
+		map_rows[uni_rows[i]] = i;
+	for (int i = 0; i < uni_cols.size(); ++i)
+		map_cols[uni_cols[i]] = i;
+	
+	int NUM_OF_CELLS = uni_rows.size();
+	cout << "NUM_OF_CELLS = " << NUM_OF_CELLS << endl;
+	double** TCCmatrix = new double*[rows.size()];
+	for (int i = 0; i < uni_rows.size(); ++i)
+	{
+		TCCmatrix[i] = new double[uni_cols.size()];
+		memset(TCCmatrix[i], 0, uni_cols.size() * sizeof(double));
+	}
+	double* rows_sum = new double[uni_rows.size()];
+	memset(rows_sum, 0, uni_rows.size() * sizeof(double));
+	for (int i = 0; i < rows.size(); ++i)
+	{
+		TCCmatrix[map_rows[rows[i]]][map_cols[cols[i]]] = data[i];
+		rows_sum[map_rows[rows[i]]] += data[i];
+	}
+	for (int i = 0; i < rows.size(); ++i)
+	{
+		TCCmatrix[map_rows[rows[i]]][map_cols[cols[i]]] /= rows_sum[map_rows[rows[i]]];
+	}
+	
+	cout << "Calculating pairwise L1 distances..." << endl;
+	int t0 = clock();
+	double** dist = new double*[NUM_OF_CELLS];
+	for (int i = 0; i < NUM_OF_CELLS; ++i)
+		dist[i] = new double[NUM_OF_CELLS];
+
+	cout << uni_cols.size() << endl;
+	#pragma omp parallel for num_threads(8)
+	for (int i = 0; i < NUM_OF_CELLS; ++i)
+	{
+		memset(dist[i], 0, NUM_OF_CELLS * sizeof(double));
+		for (int j = i+1; j < NUM_OF_CELLS; ++j)
+		{
+			for (int k = 0; k < uni_cols.size(); ++k)
+				dist[i][j] += fabs(TCCmatrix[i][k] - TCCmatrix[j][k]);
+			dist[j][i] = dist[i][j];
+		}
+	}
+	cout << "time: " << (clock() - t0) << " ms" << endl;
+	cout << "DONE" << endl;
+}
+
+void tjson()
+{
+	pt::ptree root;
+	pt::read_json("config.json", root);
+	
+	int D_MIN = root.get<int>("dmin");
+	int BARCODE_LENGTH = root.get<int>("BARCODE_LENGTH");
+	int NUM_THREADS = root.get<int>("NUM_THREADS");
+
+	string SOURCE_DIR = root.get<string>("SOURCE_DIR");
+	string SAVE_DIR = root.get<string>("SAVE_DIR");
+	string BASE_DIR = root.get<string>("BASE_DIR");
+	string OUTPUT_DIR = root.get<string>("OUTPUT_DIR");
+	string TCC_output = root.get<string>("kallisto.TCC_output");
+	string kallisto_binary = root.get<string>("kallisto.binary");
+	string kallisto_index = root.get<string>("kallisto.index");
+
+	vector<int> WINDOWS;
+	pt::ptree child_win = root.get_child("WINDOW");
+	BOOST_FOREACH(pt::ptree::value_type &v, child_win)
+		WINDOWS.push_back(v.second.get_value<int>());
+
+	set<string>sample_idx;
+	pt::ptree child_simple = root.get_child("sample_idx");
+	BOOST_FOREACH(pt::ptree::value_type &v, child_simple)
+		sample_idx.insert(v.second.get_value<string>());
 }
 
 int main(int argc, char *argv[])
 {
-	//get_barcode();
+	int start = clock(), t1, t0 = start;
+
+	get_barcode();
+	t1 = clock();
+	cout << "get_barcode: " << (t1 - t0) << " ms" << endl;
+	t0 = t1;
+
 	error_correct_and_split();
+	t1 = clock();
+	cout << "error_corrects: " << (t1 - t0) << " ms" << endl;
+	t0 = t1;
+
+	compute_TCCs();
+	t1 = clock();
+	cout << "compute_TCCs: " << (t1 - t0) << " ms" << endl;
+	t0 = t1;
+
+	prep_TCC_matrix();
+	t1 = clock();
+	cout << "prep_TCC_matrix: " << (t1 - t0) << " ms" << endl;
+	t0 = t1;
+
+	tjson();
+	int finish = clock();
+	cout << "total: " << (finish - start) / 60000.0 << " mins" << endl;
+	getchar();
 	return 0;
 }
